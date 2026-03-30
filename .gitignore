@@ -1,0 +1,17 @@
+.agent/
+.venv/
+__pycache__/
+*.pyc
+.env
+build/
+dist/
+*.spec
+
+# Vault data — contains encrypted passwords and salt
+data/
+
+# Encrypted backup files
+*.vault
+
+# Windows shortcut (user-specific)
+*.lnk
