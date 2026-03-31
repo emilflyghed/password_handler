@@ -2,7 +2,14 @@ import sqlite3
 from datetime import datetime, timezone
 
 from crypto.encryption import generate_salt, derive_key, encrypt, decrypt
-from config import VERIFICATION_TOKEN
+from config import VERIFICATION_TOKEN, RATE_LIMIT_MAX_ATTEMPTS, RATE_LIMIT_BASE_SECONDS
+
+
+class RateLimitError(Exception):
+    """Raised when PIN verification is blocked by rate limiting."""
+    def __init__(self, retry_after: int):
+        self.retry_after = retry_after
+        super().__init__(f"Rate limited. Retry after {retry_after}s")
 
 
 def setup_pin(conn: sqlite3.Connection, pin: str) -> bytearray:
@@ -21,7 +28,51 @@ def setup_pin(conn: sqlite3.Connection, pin: str) -> bytearray:
     return key
 
 
+def check_rate_limit(conn: sqlite3.Connection) -> tuple[bool, int]:
+    """Check if rate limiting is active. Returns (is_locked, seconds_remaining)."""
+    row = conn.execute(
+        "SELECT failed_attempts, lockout_until FROM rate_limit WHERE id = 1"
+    ).fetchone()
+    if row is None or row["lockout_until"] is None:
+        return False, 0
+    lockout_until = datetime.fromisoformat(row["lockout_until"])
+    now = datetime.now(timezone.utc)
+    if now < lockout_until:
+        remaining = int((lockout_until - now).total_seconds()) + 1
+        return True, remaining
+    return False, 0
+
+
+def _record_failed_attempt(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "UPDATE rate_limit SET failed_attempts = failed_attempts + 1 WHERE id = 1"
+    )
+    row = conn.execute(
+        "SELECT failed_attempts FROM rate_limit WHERE id = 1"
+    ).fetchone()
+    attempts = row["failed_attempts"]
+    if attempts >= RATE_LIMIT_MAX_ATTEMPTS:
+        lockout_secs = RATE_LIMIT_BASE_SECONDS * (attempts - RATE_LIMIT_MAX_ATTEMPTS + 1)
+        lockout_until = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            "UPDATE rate_limit SET lockout_until = datetime(?, '+' || ? || ' seconds') WHERE id = 1",
+            (lockout_until, lockout_secs),
+        )
+    conn.commit()
+
+
+def _reset_rate_limit(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "UPDATE rate_limit SET failed_attempts = 0, lockout_until = NULL WHERE id = 1"
+    )
+    conn.commit()
+
+
 def verify_pin(conn: sqlite3.Connection, pin: str):
+    is_locked, remaining = check_rate_limit(conn)
+    if is_locked:
+        raise RateLimitError(remaining)
+
     row = conn.execute(
         "SELECT value FROM config WHERE key = 'salt'"
     ).fetchone()
@@ -39,9 +90,11 @@ def verify_pin(conn: sqlite3.Connection, pin: str):
     try:
         result = decrypt(row["value"], key)
         if result == VERIFICATION_TOKEN:
+            _reset_rate_limit(conn)
             return key
     except Exception:
         pass
+    _record_failed_attempt(conn)
     return None
 
 

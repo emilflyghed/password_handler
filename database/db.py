@@ -25,6 +25,13 @@ def init_db(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS rate_limit (
+            id              INTEGER PRIMARY KEY CHECK (id = 1),
+            failed_attempts INTEGER NOT NULL DEFAULT 0,
+            lockout_until   TEXT
+        );
+        INSERT OR IGNORE INTO rate_limit (id, failed_attempts, lockout_until)
+        VALUES (1, 0, NULL);
     """)
 
 

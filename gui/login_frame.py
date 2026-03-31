@@ -1,7 +1,7 @@
 import customtkinter as ctk
 from database.db import is_first_run
-from database.models import setup_pin, verify_pin
-from config import PIN_MIN_LENGTH, PIN_MAX_LENGTH
+from database.models import setup_pin, verify_pin, check_rate_limit, RateLimitError
+from config import PIN_MIN_LENGTH, PIN_MAX_LENGTH, RATE_LIMIT_MAX_ATTEMPTS
 
 
 class LoginFrame(ctk.CTkFrame):
@@ -10,7 +10,6 @@ class LoginFrame(ctk.CTkFrame):
         self.app = app
         self.conn = conn
         self.first_run = first_run
-        self._failed_attempts = 0
         self._locked_out = False
 
         # Center container
@@ -121,6 +120,14 @@ class LoginFrame(ctk.CTkFrame):
 
         self.pin_entry.focus_set()
 
+        if not first_run:
+            is_locked, remaining = check_rate_limit(self.conn)
+            if is_locked:
+                self._locked_out = True
+                self.submit_btn.configure(state="disabled")
+                self._show_error(f"Too many attempts. Locked for {remaining}s")
+                self._countdown(remaining)
+
     def _show_error(self, msg: str):
         self.error_label.configure(text=msg)
 
@@ -162,24 +169,32 @@ class LoginFrame(ctk.CTkFrame):
             self.submit_btn.configure(state="disabled")
             self.status_label.configure(text="Verifying...")
             self.update_idletasks()
-            key = verify_pin(self.conn, pin)
+            try:
+                key = verify_pin(self.conn, pin)
+            except RateLimitError as e:
+                self.pin_entry.delete(0, "end")
+                self._locked_out = True
+                self._show_error(f"Too many attempts. Locked for {e.retry_after}s")
+                self._countdown(e.retry_after)
+                return
             if key is not None:
-                self._failed_attempts = 0
                 self.app.on_login_success(key)
             else:
-                self._failed_attempts += 1
                 self.pin_entry.delete(0, "end")
-
-                if self._failed_attempts >= 3:
-                    lockout_secs = 30 * (self._failed_attempts - 2)
+                is_locked, remaining = check_rate_limit(self.conn)
+                if is_locked:
                     self._locked_out = True
                     self.submit_btn.configure(state="disabled")
-                    self._show_error(f"Too many attempts. Locked for {lockout_secs}s")
-                    self._countdown(lockout_secs)
+                    self._show_error(f"Too many attempts. Locked for {remaining}s")
+                    self._countdown(remaining)
                 else:
+                    row = self.conn.execute(
+                        "SELECT failed_attempts FROM rate_limit WHERE id = 1"
+                    ).fetchone()
+                    attempts_left = RATE_LIMIT_MAX_ATTEMPTS - (row["failed_attempts"] if row else 0)
                     self.submit_btn.configure(state="normal")
                     self.status_label.configure(text="")
-                    self._show_error(f"Incorrect PIN ({3 - self._failed_attempts} attempts left)")
+                    self._show_error(f"Incorrect PIN ({attempts_left} attempt{'s' if attempts_left != 1 else ''} left)")
                     self.pin_entry.focus_set()
 
     def _countdown(self, remaining: int):

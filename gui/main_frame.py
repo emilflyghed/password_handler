@@ -6,6 +6,7 @@ from utils.clipboard import copy_with_auto_clear
 from utils.backup import export_backup, import_backup
 from gui.entry_dialog import EntryDialog
 from gui.generator_dialog import GeneratorDialog
+from gui.pin_dialog import PinDialog
 from config import BACKUP_EXTENSION, PASSWORD_SHOW_SECONDS
 
 
@@ -292,25 +293,45 @@ class MainFrame(ctk.CTkFrame):
             defaultextension=BACKUP_EXTENSION,
             filetypes=[("Vault Backup", f"*{BACKUP_EXTENSION}")],
         )
-        if filepath:
+        if not filepath:
+            return
+
+        def do_export(pin):
             try:
-                export_backup(self.conn, self.key, filepath)
+                export_backup(self.conn, self.key, pin, filepath)
                 messagebox.showinfo("Export", "Backup exported successfully!")
             except Exception as e:
                 messagebox.showerror("Export Error", str(e))
+
+        PinDialog(
+            self.app,
+            title="Export PIN",
+            prompt="Choose a PIN to protect this backup. You'll need it to import on another device.",
+            on_submit=do_export,
+        )
 
     def _on_import(self):
         filepath = filedialog.askopenfilename(
             title="Import Backup",
             filetypes=[("Vault Backup", f"*{BACKUP_EXTENSION}")],
         )
-        if filepath:
+        if not filepath:
+            return
+
+        def do_import(pin):
             try:
-                count = import_backup(self.conn, self.key, filepath)
+                count = import_backup(self.conn, self.key, pin, filepath)
                 messagebox.showinfo("Import", f"Imported {count} entries!")
                 self._refresh()
             except Exception as e:
                 messagebox.showerror("Import Error", f"Failed to import. Wrong PIN or corrupted file.\n\n{e}")
+
+        PinDialog(
+            self.app,
+            title="Import PIN",
+            prompt="Enter the PIN that was used when this backup was exported.",
+            on_submit=do_import,
+        )
 
     def update_timer(self, seconds: int):
         mins, secs = divmod(seconds, 60)
